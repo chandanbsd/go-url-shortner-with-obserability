@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -26,7 +27,7 @@ func main() {
 	os.Exit(status)
 }
 
-func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir string) int {
+func initializeLogger() (*log.Logger, error) {
 	LINKO_LOG_FILE := os.Getenv("LINKO_LOG_FILE")
 
 	writer := io.Writer(os.Stderr)
@@ -34,25 +35,33 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	if LINKO_LOG_FILE != "" {
 		linkoAccessLogFile, err := os.OpenFile(LINKO_LOG_FILE, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			return 1
+			return nil, fmt.Errorf("Failed to initialize logger %v", err)
 		}
 		defer linkoAccessLogFile.Close()
 
-		writer = io.MultiWriter(os.Stderr, linkoAccessLogFile)
+		bufferedFile := bufio.NewWriterSize(linkoAccessLogFile, 8192)
+
+
+		writer = io.MultiWriter(os.Stderr, bufferedFile)
 	}
 
-	fmt.Println(LINKO_LOG_FILE)
+	return log.New(writer, "", 0), nil
+}
 
-	accessLogger := log.New(writer, "", 0)
+func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir string) int {
 
-	standardLogger := log.New(writer, "", 0)
-
-	st, err := store.New(dataDir, standardLogger)
+	customLogger, err := initializeLogger()
 	if err != nil {
-		standardLogger.Printf("failed to create store: %v", err)
+		fmt.Println(err)
+		return 1;
+	}
+
+	st, err := store.New(dataDir, customLogger)
+	if err != nil {
+		customLogger.Printf("failed to create store: %v", err)
 		return 1
 	}
-	s := newServer(*st, httpPort, cancel, accessLogger)
+	s := newServer(*st, httpPort, cancel, customLogger)
 	var serverErr error
 	go func() {
 		serverErr = s.start()
@@ -63,11 +72,11 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	defer cancel()
 
 	if err := s.shutdown(shutdownCtx); err != nil {
-		standardLogger.Printf("failed to shutdown server: %v", err)
+		customLogger.Printf("failed to shutdown server: %v", err)
 		return 1
 	}
 	if serverErr != nil {
-		standardLogger.Printf("server error: %v", serverErr)
+		customLogger.Printf("server error: %v", serverErr)
 		return 1
 	}
 	return 0
